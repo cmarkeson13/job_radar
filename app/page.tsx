@@ -58,6 +58,12 @@ function HomeContent() {
           <Link href="/jobs" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
             Jobs
           </Link>
+          <Link href="/resume" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+            Resume
+          </Link>
+          <Link href="/top-matches" className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700">
+            Top Matches
+          </Link>
         </nav>
       </div>
     </main>

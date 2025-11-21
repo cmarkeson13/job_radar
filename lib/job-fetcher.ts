@@ -87,10 +87,13 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
       }
     }
 
-    // Update company's last_checked_at
+    // Update company's last_checked_at and clear any previous error
     await supabase
       .from('companies')
-      .update({ last_checked_at: new Date().toISOString() })
+      .update({ 
+        last_checked_at: new Date().toISOString(),
+        last_fetch_error: null, // Clear error on success
+      })
       .eq('id', companyId)
 
     // Log success
@@ -106,6 +109,15 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     
+    // Store error on company record
+    await supabase
+      .from('companies')
+      .update({ 
+        last_fetch_error: errorMessage,
+        last_checked_at: new Date().toISOString(), // Still update checked time
+      })
+      .eq('id', companyId)
+    
     // Log error
     await supabase.from('logs').insert({
       level: 'error',
@@ -119,27 +131,169 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
   }
 }
 
-export async function fetchJobsForAllCompanies(): Promise<void> {
+// In-memory progress store for browser console logging
+const progressStore = new Map<string, {
+  total: number
+  completed: number
+  success: number
+  failed: number
+  current?: string
+  logs: Array<{ time: number; message: string }>
+  errors: string[]
+  finished: boolean
+}>()
+
+export function getBulkFetchProgress(sessionId: string) {
+  return progressStore.get(sessionId) || null
+}
+
+export function clearBulkFetchProgress(sessionId: string) {
+  progressStore.delete(sessionId)
+}
+
+// Clean up old progress entries (older than 1 hour)
+setInterval(() => {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000
+  for (const [sessionId, progress] of progressStore.entries()) {
+    if (progress.finished && progress.logs.length > 0) {
+      const lastLogTime = progress.logs[progress.logs.length - 1]?.time || 0
+      if (lastLogTime < oneHourAgo) {
+        progressStore.delete(sessionId)
+      }
+    }
+  }
+}, 5 * 60 * 1000) // Check every 5 minutes
+
+function addProgressLog(sessionId: string, message: string) {
+  const progress = progressStore.get(sessionId)
+  if (progress) {
+    progress.logs.push({ time: Date.now(), message })
+    // Keep only last 100 logs to prevent memory issues
+    if (progress.logs.length > 100) {
+      progress.logs.shift()
+    }
+  }
+}
+
+export async function fetchJobsForAllCompanies(
+  forceAll: boolean = false,
+  sessionId?: string
+): Promise<{ total: number; success: number; failed: number; errors?: string[]; sessionId?: string }> {
   const supabase = createServerClient()
+  const fetchSessionId = sessionId || `fetch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
 
-  // Get all companies that haven't been checked in the last 7 days
-  const sevenDaysAgo = new Date()
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+  let companies
+  let error
 
-  const { data: companies, error } = await supabase
-    .from('companies')
-    .select('id')
-    .or(`last_checked_at.is.null,last_checked_at.lt.${sevenDaysAgo.toISOString()}`)
+  if (forceAll) {
+    // Fetch ALL companies when explicitly requested
+    const result = await supabase
+      .from('companies')
+      .select('id, name')
+    companies = result.data
+    error = result.error
+  } else {
+    // Get all companies that haven't been checked in the last 7 days
+    const sevenDaysAgo = new Date()
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+
+    const result = await supabase
+      .from('companies')
+      .select('id, name')
+      .or(`last_checked_at.is.null,last_checked_at.lt.${sevenDaysAgo.toISOString()}`)
+    companies = result.data
+    error = result.error
+  }
 
   if (error || !companies) {
     console.error('Error fetching companies:', error)
-    return
+    return { total: 0, success: 0, failed: 0 }
   }
 
-  for (const company of companies) {
-    await fetchJobsForCompany(company.id)
-    // Small delay between companies to be respectful
-    await new Promise(resolve => setTimeout(resolve, 1000))
+  // Initialize progress
+  progressStore.set(fetchSessionId, {
+    total: companies.length,
+    completed: 0,
+    success: 0,
+    failed: 0,
+    logs: [],
+    errors: [],
+    finished: false,
+  })
+
+  addProgressLog(fetchSessionId, `Starting fetch for ${companies.length} companies...`)
+
+  let success = 0
+  let failed = 0
+  const startTime = Date.now()
+  const errors: string[] = []
+  
+  // Process companies in parallel batches (5 at a time for rate limiting)
+  const BATCH_SIZE = 5
+  const DELAY_BETWEEN_BATCHES = 500 // 500ms between batches
+  
+  for (let i = 0; i < companies.length; i += BATCH_SIZE) {
+    const batch = companies.slice(i, i + BATCH_SIZE)
+    const batchPromises = batch.map(async (company) => {
+      const companyStartTime = Date.now()
+      const companyName = company.name || company.id
+      
+      // Update current company being processed
+      const progress = progressStore.get(fetchSessionId)
+      if (progress) {
+        progress.current = companyName
+      }
+      const currentIndex = progress ? progress.completed + 1 : i + 1
+      addProgressLog(fetchSessionId, `[${currentIndex}/${companies.length}] Fetching: ${companyName}`)
+      
+      const res = await fetchJobsForCompany(company.id)
+      const companyElapsed = ((Date.now() - companyStartTime) / 1000).toFixed(1)
+      
+      // Update progress after completion
+      const progressAfter = progressStore.get(fetchSessionId)
+      if (progressAfter) {
+        if (res.success) {
+          success++
+          progressAfter.success++
+          progressAfter.completed++
+          addProgressLog(fetchSessionId, `✓ ${companyName}: ${res.jobsAdded} new, ${res.jobsUpdated} updated (${companyElapsed}s)`)
+        } else {
+          failed++
+          const errorMsg = res.error || 'Unknown error'
+          errors.push(`${companyName}: ${errorMsg}`)
+          progressAfter.failed++
+          progressAfter.completed++
+          progressAfter.errors.push(`${companyName}: ${errorMsg}`)
+          addProgressLog(fetchSessionId, `✗ ${companyName}: ${errorMsg} (${companyElapsed}s)`)
+        }
+        progressAfter.current = undefined // Clear current after completion
+      }
+    })
+    
+    // Wait for all companies in this batch to complete
+    await Promise.all(batchPromises)
+    
+    // Small delay between batches to be respectful to servers
+    if (i + BATCH_SIZE < companies.length) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES))
+    }
+  }
+
+  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+  addProgressLog(fetchSessionId, `Complete: ${success} succeeded, ${failed} failed in ${totalElapsed}s`)
+  
+  const progress = progressStore.get(fetchSessionId)
+  if (progress) {
+    progress.finished = true
+    progress.current = undefined
+  }
+
+  return { 
+    total: companies.length, 
+    success, 
+    failed, 
+    errors: errors.length > 0 ? errors : undefined,
+    sessionId: fetchSessionId
   }
 }
 

@@ -1,4 +1,4 @@
-export type Platform = 'greenhouse' | 'lever' | 'ashby' | 'generic_html' | 'linkedin' | 'unknown'
+export type Platform = 'greenhouse' | 'lever' | 'ashby' | 'workable' | 'polymer' | 'generic_html' | 'linkedin' | 'unknown'
 
 export type WorkModel = 'remote' | 'hybrid' | 'onsite' | 'unknown'
 
@@ -23,6 +23,7 @@ export interface Company {
   priority: number | null
   relevant_for: RelevantFor | null
   last_checked_at: string | null
+  last_fetch_error: string | null
   created_at: string
   updated_at: string
 }
@@ -73,5 +74,19 @@ export interface Log {
   module: 'fetch_jobs' | 'score_jobs' | 'sync_sheets'
   message: string
   details_json: Record<string, any> | null
+}
+
+export interface UserProfile {
+  id: string
+  user_id: string
+  resume_text: string | null
+  resume_summary: string | null
+  resume_file_url: string | null
+  resume_uploaded_at: string | null
+  job_preferences: string | null
+  location_preferences: string | null
+  seniority_preference: string | null
+  created_at: string
+  updated_at: string
 }
 
