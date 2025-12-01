@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
+import { normalizeCareersUrl } from '@/lib/url-utils'
 
 function detectPlatformFromHtml(html: string) {
   const indicators: Array<{ platform: string; match: RegExp; urlPattern?: RegExp }> = [
@@ -53,7 +54,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Company has no careers_url to inspect' }, { status: 400 })
     }
 
-    const res = await fetch(targetUrl, {
+    const normalizedTargetUrl = normalizeCareersUrl(targetUrl)
+    if (!normalizedTargetUrl) {
+      return NextResponse.json({ error: 'Invalid careers_url format' }, { status: 400 })
+    }
+
+    const res = await fetch(normalizedTargetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
@@ -71,7 +77,8 @@ export async function POST(request: NextRequest) {
     }
 
     const updates: any = { platform_key: platform }
-    if (canonical) updates.careers_url = canonical
+    const normalizedCanonical = normalizeCareersUrl(canonical || normalizedTargetUrl)
+    if (normalizedCanonical) updates.careers_url = normalizedCanonical
 
     const { error: updateErr } = await supabase
       .from('companies')
@@ -85,7 +92,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       companyId,
       platform,
-      careers_url: canonical || company.careers_url,
+      careers_url: normalizedCanonical || normalizedTargetUrl,
       updated: true,
     })
   } catch (error) {

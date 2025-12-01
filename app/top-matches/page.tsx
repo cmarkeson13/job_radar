@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
 import { Job, Company } from '@/lib/database.types'
+import { ModelToggle, useModelPreference } from '@/components/ModelToggle'
 
 interface ScoredJob extends Job {
   company_name?: string
@@ -19,6 +20,7 @@ function TopMatchesPageContent() {
   const [selectedJob, setSelectedJob] = useState<ScoredJob | null>(null)
   const [minScore, setMinScore] = useState(80) // Default: show 80%+ matches
   const [error, setError] = useState<string | null>(null)
+  const { modelQuality, setModelQuality } = useModelPreference()
 
   useEffect(() => {
     checkUser()
@@ -62,7 +64,7 @@ function TopMatchesPageContent() {
         .eq('closed_flag', false)
         .order('score_you', { ascending: false, nullsLast: true })
         .order('detected_at', { ascending: false })
-        .limit(200)
+        .limit(1000)
 
       if (jobsError) {
         console.error('Error loading jobs:', jobsError)
@@ -104,6 +106,16 @@ function TopMatchesPageContent() {
     }
   }
 
+function parseListField(value?: string | null): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
   async function scoreAllJobs() {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.user) {
@@ -131,7 +143,7 @@ function TopMatchesPageContent() {
       const response = await fetch('/api/jobs/score-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: session.user.id }),
+        body: JSON.stringify({ userId: session.user.id, limit: jobCount, modelQuality }),
       })
 
       const result = await response.json()
@@ -140,7 +152,7 @@ function TopMatchesPageContent() {
         throw new Error(result.error || 'Scoring failed')
       }
 
-      alert(`Scored ${result.scored} jobs (${result.failed} failed)`)
+      alert(`Scored ${result.scored} job(s).${result.failed ? ` ${result.failed} failed.` : ''}`)
       await loadJobs() // Reload to show new scores
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -191,7 +203,7 @@ function TopMatchesPageContent() {
         )}
 
         <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-4">
             <div>
               <h2 className="text-xl font-semibold mb-2">Job Matching</h2>
               <p className="text-sm text-gray-600 mb-1">
@@ -207,13 +219,16 @@ function TopMatchesPageContent() {
                 ⚠️ Scoring uses OpenAI API credits. Start with a small batch to test.
               </p>
             </div>
-            <button
-              onClick={scoreAllJobs}
-              disabled={scoring}
-              className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
-            >
-              {scoring ? 'Scoring Jobs...' : 'Score All Jobs'}
-            </button>
+            <div className="flex items-center gap-3">
+              <ModelToggle value={modelQuality} onChange={setModelQuality} />
+              <button
+                onClick={scoreAllJobs}
+                disabled={scoring}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+              >
+                {scoring ? 'Scoring Jobs...' : 'Score All Jobs'}
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
@@ -348,6 +363,42 @@ function TopMatchesPageContent() {
                       <div className="text-sm text-gray-700 max-h-96 overflow-y-auto">
                         <pre className="whitespace-pre-wrap font-sans">{selectedJob.full_description}</pre>
                       </div>
+                    </div>
+                  )}
+                  {selectedJob.score_reasoning && (
+                    <div className="mt-4 pt-4 border-t">
+                      <h4 className="font-medium mb-2">AI Reasoning</h4>
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{selectedJob.score_reasoning}</p>
+                    </div>
+                  )}
+                  {parseListField(selectedJob.score_strengths).length > 0 && (
+                    <div className="mt-4">
+                      <h4 className="font-medium mb-2">Strengths</h4>
+                      <ul className="list-disc list-inside text-sm text-gray-700">
+                        {parseListField(selectedJob.score_strengths).map((item, idx) => (
+                          <li key={idx}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {parseListField(selectedJob.score_gaps).length > 0 && (
+                    <div className="mt-4">
+                      <h4 className="font-medium mb-2">Gaps</h4>
+                      <ul className="list-disc list-inside text-sm text-gray-700">
+                        {parseListField(selectedJob.score_gaps).map((item, idx) => (
+                          <li key={idx}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {parseListField(selectedJob.score_hard_blockers).length > 0 && (
+                    <div className="mt-4">
+                      <h4 className="font-medium mb-2 text-red-700">Hard Blockers</h4>
+                      <ul className="list-disc list-inside text-sm text-red-700">
+                        {parseListField(selectedJob.score_hard_blockers).map((item, idx) => (
+                          <li key={idx}>{item}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>

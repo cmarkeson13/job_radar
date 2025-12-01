@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
+import { ModelToggle, useModelPreference } from '@/components/ModelToggle'
 
 function ResumePageContent() {
   const [user, setUser] = useState<any>(null)
@@ -16,7 +17,9 @@ function ResumePageContent() {
   const [jobPreferences, setJobPreferences] = useState<string>('')
   const [locationPreferences, setLocationPreferences] = useState<string>('')
   const [seniorityPreference, setSeniorityPreference] = useState<string>('')
+  const [experienceYearsOverride, setExperienceYearsOverride] = useState<string>('')
   const [savingPreferences, setSavingPreferences] = useState(false)
+  const { modelQuality, setModelQuality } = useModelPreference('premium')
 
   useEffect(() => {
     checkUser()
@@ -35,7 +38,7 @@ function ResumePageContent() {
 
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('resume_file_url, resume_summary, resume_uploaded_at, job_preferences, location_preferences, seniority_preference')
+        .select('resume_file_url, resume_summary, resume_uploaded_at, job_preferences, location_preferences, seniority_preference, experience_years_override')
         .eq('user_id', session.user.id)
         .single()
 
@@ -56,6 +59,11 @@ function ResumePageContent() {
         setJobPreferences(data.job_preferences || '')
         setLocationPreferences(data.location_preferences || '')
         setSeniorityPreference(data.seniority_preference || '')
+        setExperienceYearsOverride(
+          data.experience_years_override !== null && data.experience_years_override !== undefined
+            ? String(data.experience_years_override)
+            : ''
+        )
       } else {
         // No resume uploaded yet
         setResumeFileName(null)
@@ -138,7 +146,7 @@ function ResumePageContent() {
       const response = await fetch('/api/resume/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: session.user.id }),
+        body: JSON.stringify({ userId: session.user.id, modelQuality }),
       })
 
       // Check if response is JSON before parsing
@@ -164,6 +172,9 @@ function ResumePageContent() {
       if (typeof result.seniorityPreference === 'string') {
         setSeniorityPreference(result.seniorityPreference)
       }
+      if (!experienceYearsOverride && result?.candidateProfile?.total_years_experience) {
+        setExperienceYearsOverride(String(result.candidateProfile.total_years_experience))
+      }
       alert('Resume analyzed successfully!')
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -185,13 +196,14 @@ function ResumePageContent() {
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('user_profiles')
-        .update({
-          job_preferences: jobPreferences || null,
-          location_preferences: locationPreferences || null,
-          seniority_preference: seniorityPreference || null,
-        })
+          const { error: updateError } = await supabase
+            .from('user_profiles')
+            .update({
+              job_preferences: jobPreferences || null,
+              location_preferences: locationPreferences || null,
+              seniority_preference: seniorityPreference || null,
+              experience_years_override: experienceYearsOverride ? Number(experienceYearsOverride) : null,
+            })
         .eq('user_id', session.user.id)
 
       if (updateError) {
@@ -262,18 +274,21 @@ function ResumePageContent() {
 
         {resumeFileName && (
           <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <div className="flex justify-between items-center mb-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
               <div>
                 <h2 className="text-xl font-semibold">Resume File</h2>
                 <p className="text-sm text-gray-600 mt-1">{resumeFileName}</p>
               </div>
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzing}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-              >
-                {analyzing ? 'Analyzing...' : 'Analyze with AI'}
-              </button>
+              <div className="flex items-center gap-3">
+                <ModelToggle value={modelQuality} onChange={setModelQuality} />
+                <button
+                  onClick={handleAnalyze}
+                  disabled={analyzing}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+                >
+                  {analyzing ? 'Analyzing...' : 'Analyze with AI'}
+                </button>
+              </div>
             </div>
             <p className="text-sm text-gray-600">
               Your resume is stored and ready for AI analysis. Click "Analyze with AI" to generate a summary.
@@ -287,13 +302,16 @@ function ResumePageContent() {
             <div className="bg-gray-50 p-4 rounded">
               <pre className="whitespace-pre-wrap text-sm">{resumeSummary}</pre>
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={analyzing}
-              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-            >
-              {analyzing ? 'Re-analyzing...' : 'Re-analyze Resume'}
-            </button>
+            <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <ModelToggle value={modelQuality} onChange={setModelQuality} />
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {analyzing ? 'Re-analyzing...' : 'Re-analyze Resume'}
+              </button>
+            </div>
           </div>
         )}
 
@@ -305,6 +323,21 @@ function ResumePageContent() {
               will be used when ranking jobs and can be refined from the summary above.
             </p>
             <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Years of Experience (override)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={experienceYearsOverride}
+                  onChange={(e) => setExperienceYearsOverride(e.target.value)}
+                  className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-300"
+                  placeholder="e.g., 4"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Leave blank to use the AI-estimated total from your resume.
+                </p>
+              </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Job Preferences</label>
                 <textarea

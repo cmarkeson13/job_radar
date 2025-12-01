@@ -1,6 +1,7 @@
 import { createServerClient } from './supabase'
 import { getAdapter } from './adapters'
-import { Company, Job, Platform } from './database.types'
+import { Platform } from './database.types'
+import { analyzeJobProfile } from './job-analyzer'
 
 export async function fetchJobsForCompany(companyId: string): Promise<{ success: boolean; jobsAdded: number; jobsUpdated: number; error?: string }> {
   const supabase = createServerClient()
@@ -27,7 +28,7 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
       // Check if job already exists
       const { data: existingJob } = await supabase
         .from('jobs')
-        .select('id')
+        .select('id, job_profile, full_description, description_snippet')
         .eq('company_id', companyId)
         .eq('job_uid', normalizedJob.job_uid)
         .single()
@@ -48,6 +49,8 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
         closed_flag: false,
       }
 
+      let jobId: string | null = null
+
       if (existingJob) {
         // Update existing job
         await supabase
@@ -55,16 +58,45 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
           .update(jobData)
           .eq('id', existingJob.id)
         jobsUpdated++
+        jobId = existingJob.id
       } else {
         // Insert new job
-        await supabase
+        const insertResult = await supabase
           .from('jobs')
           .insert({
             ...jobData,
             status: 'New',
             detected_at: new Date().toISOString(),
           })
+          .select('id')
+          .single()
+        if (insertResult.error) {
+          throw insertResult.error
+        }
+        jobId = insertResult.data?.id || null
         jobsAdded++
+      }
+
+      if (jobId && (normalizedJob.full_description || normalizedJob.description_snippet)) {
+        const descriptionToUse = normalizedJob.full_description || normalizedJob.description_snippet
+        const previousDescription = existingJob?.full_description || existingJob?.description_snippet
+        const previousProfile = existingJob?.job_profile
+        if (!previousProfile || previousDescription !== descriptionToUse) {
+          const analyzedProfile = await analyzeJobProfile({
+            title: normalizedJob.title,
+            company: company.name || 'Unknown Company',
+            description: descriptionToUse || '',
+            location: normalizedJob.location_raw,
+            seniority: normalizedJob.team || undefined,
+            remoteFlag: normalizedJob.remote_flag,
+          })
+          if (analyzedProfile) {
+            await supabase
+              .from('jobs')
+              .update({ job_profile: analyzedProfile })
+              .eq('id', jobId)
+          }
+        }
       }
     }
 
@@ -131,8 +163,7 @@ export async function fetchJobsForCompany(companyId: string): Promise<{ success:
   }
 }
 
-// In-memory progress store for browser console logging
-const progressStore = new Map<string, {
+type BulkProgress = {
   total: number
   completed: number
   success: number
@@ -141,7 +172,15 @@ const progressStore = new Map<string, {
   logs: Array<{ time: number; message: string }>
   errors: string[]
   finished: boolean
-}>()
+}
+
+const globalAny = globalThis as any
+if (!globalAny.__jobRadarProgressStore) {
+  globalAny.__jobRadarProgressStore = new Map<string, BulkProgress>()
+}
+
+// In-memory progress store for browser console logging (shared across routes)
+const progressStore: Map<string, BulkProgress> = globalAny.__jobRadarProgressStore
 
 export function getBulkFetchProgress(sessionId: string) {
   return progressStore.get(sessionId) || null

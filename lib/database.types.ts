@@ -42,10 +42,16 @@ export interface Job {
   detected_at: string
   description_snippet: string | null
   full_description: string | null
+  job_profile: Record<string, any> | null
   seniority_label: SeniorityLabel
   function_label: FunctionLabel
   score_alyssa: number | null
   score_you: number | null
+  score_reasoning: string | null
+  score_strengths: string | null
+  score_gaps: string | null
+  score_hard_blockers: string | null
+  score_last_updated: string | null
   status: JobStatus
   notes: string | null
   last_seen_open_at: string | null
@@ -83,9 +89,11 @@ export interface UserProfile {
   resume_summary: string | null
   resume_file_url: string | null
   resume_uploaded_at: string | null
+  candidate_profile: Record<string, any> | null
   job_preferences: string | null
   location_preferences: string | null
   seniority_preference: string | null
+  experience_years_override: number | null
   created_at: string
   updated_at: string
 }

@@ -36,7 +36,7 @@ export class GreenhouseAdapter extends BaseAdapter {
     }
 
     const boardSlug = urlMatch[1]
-    const apiUrl = `https://boards-api.greenhouse.io/v1/boards/${boardSlug}/jobs`
+    const apiUrl = `https://boards-api.greenhouse.io/v1/boards/${boardSlug}/jobs?content=true`
 
     try {
       const response = await fetch(apiUrl, {

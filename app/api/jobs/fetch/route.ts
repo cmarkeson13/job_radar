@@ -11,18 +11,18 @@ export async function POST(request: NextRequest) {
       const result = await fetchJobsForCompany(companyId)
       return NextResponse.json(result)
     } else {
-      // Fetch jobs for all companies and return summary
-      // forceAll=true means fetch ALL companies, not just those not checked in 7 days
-      // Start the fetch in the background and return immediately with sessionId
-      const summary = await fetchJobsForAllCompanies(true)
-      
-      return NextResponse.json({ 
-        success: true, 
-        total: summary.total,
-        succeeded: summary.success, // Renamed to avoid conflict with top-level success
-        failed: summary.failed,
-        errors: summary.errors,
-        sessionId: summary.sessionId // Return sessionId for progress polling
+      // Create a session id upfront so the progress endpoint knows where to look
+      const fetchSessionId = `fetch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+      // Kick off the job in the background
+      fetchJobsForAllCompanies(true, fetchSessionId).catch(error => {
+        console.error('[Bulk Fetch] Unhandled error', error)
+      })
+
+      // Return immediately so the UI can start polling
+      return NextResponse.json({
+        success: true,
+        sessionId: fetchSessionId,
       })
     }
   } catch (error) {

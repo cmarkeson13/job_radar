@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { normalizeCareersUrl, displayUrl } from '@/lib/url-utils'
 import { Company } from '@/lib/database.types'
 import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
@@ -27,8 +28,20 @@ function CompaniesPageContent() {
   const [loading, setLoading] = useState(true)
   const [fetching, setFetching] = useState<string | null>(null)
   const [fetchingAll, setFetchingAll] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [debugResult, setDebugResult] = useState<{ company: Company; result: DebugResult } | null>(null)
   const [jobCounts, setJobCounts] = useState<Record<string, number>>({})
+  const [missingDescCounts, setMissingDescCounts] = useState<Record<string, number>>({})
+  const [bulkProgress, setBulkProgress] = useState<{
+    total: number
+    completed: number
+    success: number
+    failed: number
+    current?: string
+    finished?: boolean
+  } | null>(null)
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set())
+  const [bulkAction, setBulkAction] = useState<'fetch' | 'detect' | 'delete' | null>(null)
 
   useEffect(() => {
     loadCompanies()
@@ -60,6 +73,21 @@ function CompaniesPageContent() {
             counts[id] = (counts[id] || 0) + 1
           }
           setJobCounts(counts)
+        }
+
+        const { data: missingJobs, error: missingError } = await supabase
+          .from('jobs')
+          .select('company_id')
+          .is('full_description', null)
+          .is('description_snippet', null)
+
+        if (!missingError && missingJobs) {
+          const missingCounts: Record<string, number> = {}
+          for (const row of missingJobs as any[]) {
+            const id = row.company_id as string
+            missingCounts[id] = (missingCounts[id] || 0) + 1
+          }
+          setMissingDescCounts(missingCounts)
         }
       }
     } catch (error) {
@@ -117,6 +145,128 @@ function CompaniesPageContent() {
     }
   }
 
+  async function exportCompanies() {
+    setExporting(true)
+    try {
+      const response = await fetch('/api/companies/export')
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || 'Failed to export companies')
+      }
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `companies-${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      alert(`Export error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  function toggleCompanySelection(companyId: string, checked: boolean) {
+    setSelectedCompanyIds(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(companyId)
+      else next.delete(companyId)
+      return next
+    })
+  }
+
+  function toggleSelectAllCompanies(checked: boolean) {
+    if (checked) {
+      setSelectedCompanyIds(new Set(companies.map(c => c.id)))
+    } else {
+      setSelectedCompanyIds(new Set())
+    }
+  }
+
+  async function performFetchForCompany(id: string) {
+    const response = await fetch('/api/jobs/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companyId: id }),
+    })
+    const result = await response.json()
+    if (!response.ok || result.error) {
+      throw new Error(result.error || 'Fetch failed')
+    }
+  }
+
+  async function performDetectForCompany(id: string) {
+    const response = await fetch('/api/companies/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companyId: id }),
+    })
+    const result = await response.json()
+    if (!response.ok || result.error) {
+      throw new Error(result.error || 'Detect failed')
+    }
+  }
+
+  async function fetchSelectedCompanies() {
+    if (selectedCompanyIds.size === 0) return
+    if (!confirm(`Fetch jobs for ${selectedCompanyIds.size} selected compan${selectedCompanyIds.size === 1 ? 'y' : 'ies'}?`)) return
+    setBulkAction('fetch')
+    try {
+      for (const id of selectedCompanyIds) {
+        await performFetchForCompany(id)
+      }
+      alert(`Fetched jobs for ${selectedCompanyIds.size} compan${selectedCompanyIds.size === 1 ? 'y' : 'ies'}.`)
+      setSelectedCompanyIds(new Set())
+      loadCompanies()
+    } catch (error) {
+      alert(`Bulk fetch error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setBulkAction(null)
+    }
+  }
+
+  async function detectSelectedCompanies() {
+    if (selectedCompanyIds.size === 0) return
+    setBulkAction('detect')
+    try {
+      for (const id of selectedCompanyIds) {
+        await performDetectForCompany(id)
+      }
+      alert(`Detection complete for ${selectedCompanyIds.size} compan${selectedCompanyIds.size === 1 ? 'y' : 'ies'}.`)
+      setSelectedCompanyIds(new Set())
+      loadCompanies()
+    } catch (error) {
+      alert(`Detect error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setBulkAction(null)
+    }
+  }
+
+  async function deleteSelectedCompanies() {
+    if (selectedCompanyIds.size === 0) return
+    if (!confirm(`Delete ${selectedCompanyIds.size} compan${selectedCompanyIds.size === 1 ? 'y' : 'ies'}? This cannot be undone.`)) return
+    setBulkAction('delete')
+    try {
+      const { error } = await supabase
+        .from('companies')
+        .delete()
+        .in('id', Array.from(selectedCompanyIds))
+      if (error) {
+        throw new Error(error.message)
+      }
+      alert(`Deleted ${selectedCompanyIds.size} compan${selectedCompanyIds.size === 1 ? 'y' : 'ies'}.`)
+      setSelectedCompanyIds(new Set())
+      loadCompanies()
+    } catch (error) {
+      alert(`Delete error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setBulkAction(null)
+    }
+  }
+
   async function fetchAllJobs() {
     if (!confirm(`Fetch jobs for all ${companies.length} companies? This may take a while.`)) {
       return
@@ -127,9 +277,11 @@ function CompaniesPageContent() {
     console.log(`[Bulk Fetch] Processing companies in parallel batches (5 at a time)...`)
     
     setFetchingAll(true)
+    setBulkProgress(null)
     let sessionId: string | null = null
     let pollInterval: NodeJS.Timeout | null = null
     let lastLogIndex = 0
+    let seenProgress = false
     
     try {
       // Start the fetch
@@ -163,10 +315,28 @@ function CompaniesPageContent() {
         try {
           const progressResponse = await fetch(`/api/jobs/fetch-progress?sessionId=${sessionId}`)
           if (!progressResponse.ok) {
-            return // Progress not found yet or error
+            if (progressResponse.status === 404 && seenProgress) {
+              console.warn('[Bulk Fetch] Progress entry missing; assuming completed.')
+              if (pollInterval) {
+                clearInterval(pollInterval)
+              }
+              setFetchingAll(false)
+              setBulkProgress(null)
+              await loadCompanies()
+            }
+            return // Progress not ready yet or already cleaned up
           }
           
           const progress = await progressResponse.json()
+          seenProgress = true
+          setBulkProgress({
+            total: progress.total,
+            completed: progress.completed,
+            success: progress.success,
+            failed: progress.failed,
+            current: progress.current,
+            finished: progress.finished,
+          })
           
           // Log new messages to browser console
           if (progress.logs && progress.logs.length > lastLogIndex) {
@@ -202,6 +372,8 @@ function CompaniesPageContent() {
             alert(message)
             loadCompanies()
             setFetchingAll(false)
+            setBulkProgress(null)
+            seenProgress = false
           }
         } catch (error) {
           console.error('[Bulk Fetch] Error polling progress:', error)
@@ -226,6 +398,7 @@ function CompaniesPageContent() {
       console.error(`[Bulk Fetch] Error after ${elapsed}s:`, error)
       alert(`Error: ${errorMsg}`)
       setFetchingAll(false)
+      setBulkProgress(null)
     }
   }
 
@@ -276,6 +449,38 @@ function CompaniesPageContent() {
 
   return (
     <div className="p-8">
+      {(fetching || fetchingAll) && (
+        <div className="fixed top-4 right-4 z-50 bg-white shadow-lg border border-gray-200 rounded-lg px-4 py-3 w-72">
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <div>
+              {fetchingAll ? (
+                <>
+                  <p className="text-sm font-semibold text-gray-800">Fetching all companies…</p>
+                  <p className="text-xs text-gray-600">
+                    {bulkProgress
+                      ? `${bulkProgress.completed}/${bulkProgress.total} processed · ${bulkProgress.success} ✓ ${bulkProgress.failed} ✗`
+                      : 'Starting…'}
+                  </p>
+                  {bulkProgress?.current && (
+                    <p className="text-xs text-gray-500 mt-1 truncate">
+                      Current: {bulkProgress.current}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-gray-700">
+                  Fetching jobs for{' '}
+                  <span className="font-semibold">
+                    {companies.find(c => c.id === fetching)?.name || 'company'}
+                  </span>
+                  …
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold">Companies <span className="text-gray-500 text-xl">({companies.length})</span></h1>
@@ -302,6 +507,13 @@ function CompaniesPageContent() {
             >
               Detect All
             </button>
+            <button
+              onClick={exportCompanies}
+              disabled={exporting}
+              className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {exporting ? 'Exporting...' : 'Download CSV'}
+            </button>
             <label className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 cursor-pointer">
               Import Excel
               <input
@@ -317,10 +529,47 @@ function CompaniesPageContent() {
           </div>
         </div>
 
+        {selectedCompanyIds.size > 0 && (
+          <div className="bg-indigo-50 border border-indigo-200 rounded px-4 py-3 mb-4 text-sm text-indigo-900 flex flex-wrap items-center gap-3">
+            <span>{selectedCompanyIds.size} selected</span>
+            <button
+              onClick={fetchSelectedCompanies}
+              disabled={!!bulkAction}
+              className="px-3 py-1 bg-purple-600 text-white rounded disabled:bg-gray-400"
+            >
+              {bulkAction === 'fetch' ? 'Fetching…' : 'Fetch Selected'}
+            </button>
+            <button
+              onClick={detectSelectedCompanies}
+              disabled={!!bulkAction}
+              className="px-3 py-1 bg-blue-600 text-white rounded disabled:bg-gray-400"
+            >
+              {bulkAction === 'detect' ? 'Detecting…' : 'Detect Selected'}
+            </button>
+            <button
+              onClick={deleteSelectedCompanies}
+              disabled={!!bulkAction}
+              className="px-3 py-1 bg-red-600 text-white rounded disabled:bg-gray-400"
+            >
+              {bulkAction === 'delete' ? 'Deleting…' : 'Delete Selected'}
+            </button>
+            <button onClick={() => setSelectedCompanyIds(new Set())} className="text-xs underline">
+              Clear selection
+            </button>
+          </div>
+        )}
+
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedCompanyIds.size > 0 && selectedCompanyIds.size === companies.length}
+                    onChange={(e) => toggleSelectAllCompanies(e.target.checked)}
+                  />
+                </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Careers URL</th>
@@ -332,6 +581,13 @@ function CompaniesPageContent() {
             <tbody className="bg-white divide-y divide-gray-200">
               {companies.map((company) => (
                 <tr key={company.id}>
+                  <td className="px-4 py-4">
+                    <input
+                      type="checkbox"
+                      checked={selectedCompanyIds.has(company.id)}
+                      onChange={(e) => toggleCompanySelection(company.id, e.target.checked)}
+                    />
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{company.name}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     <select
@@ -368,9 +624,18 @@ function CompaniesPageContent() {
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">
                     {company.careers_url ? (
-                      <a href={company.careers_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                        {company.careers_url.length > 50 ? company.careers_url.substring(0, 50) + '...' : company.careers_url}
-                      </a>
+                      (() => {
+                        const normalized = normalizeCareersUrl(company.careers_url)
+                        if (!normalized) {
+                          return <span className="text-red-600">Invalid URL</span>
+                        }
+                        const label = displayUrl(company.careers_url)
+                        return (
+                          <a href={normalized} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                            {label.length > 50 ? label.substring(0, 50) + '...' : label}
+                          </a>
+                        )
+                      })()
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}
@@ -379,19 +644,29 @@ function CompaniesPageContent() {
                     {company.last_checked_at ? new Date(company.last_checked_at).toLocaleDateString() : 'Never'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-center">
-                    {company.last_fetch_error ? (
-                      <span className="text-yellow-600" title={company.last_fetch_error}>
-                        ⚠
-                      </span>
-                    ) : jobCounts[company.id] && jobCounts[company.id] > 0 ? (
-                      <span className="text-green-600" title={`${jobCounts[company.id]} job(s) found`}>
-                        ✓
-                      </span>
-                    ) : (
-                      <span className="text-gray-400" title="No jobs detected yet">
-                        —
-                      </span>
-                    )}
+                    <div className="flex items-center justify-center gap-1">
+                      {company.last_fetch_error ? (
+                        <span className="text-yellow-600" title={company.last_fetch_error}>
+                          ⚠
+                        </span>
+                      ) : jobCounts[company.id] && jobCounts[company.id] > 0 ? (
+                        <span className="text-green-600" title={`${jobCounts[company.id]} job(s) found`}>
+                          ✓
+                        </span>
+                      ) : (
+                        <span className="text-gray-400" title="No jobs detected yet">
+                          —
+                        </span>
+                      )}
+                      {missingDescCounts[company.id] && missingDescCounts[company.id] > 0 && (
+                        <span
+                          className="text-orange-500"
+                          title={`${missingDescCounts[company.id]} job(s) missing description`}
+                        >
+                          !
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <div className="flex gap-2">

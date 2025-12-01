@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { Job } from '@/lib/database.types'
 import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
+import { ModelToggle, useModelPreference } from '@/components/ModelToggle'
 
 function JobsPageContent() {
   const [jobs, setJobs] = useState<Job[]>([])
@@ -16,6 +17,11 @@ function JobsPageContent() {
   const [search, setSearch] = useState<string>('')
   const [companyFilter, setCompanyFilter] = useState<string>('all')
   const [remoteOnly, setRemoteOnly] = useState<boolean>(false)
+  const [minScore, setMinScore] = useState<number>(0)
+  const [scoring, setScoring] = useState<boolean>(false)
+  const { modelQuality, setModelQuality } = useModelPreference()
+  const [sortKey, setSortKey] = useState<'company' | 'title' | 'location' | 'remote' | 'status' | 'score' | 'posted'>('posted')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
 
   useEffect(() => {
     loadJobs()
@@ -99,7 +105,7 @@ function JobsPageContent() {
 
   function toggleSelectAll(checked: boolean) {
     if (checked) {
-      setSelectedIds(new Set(jobs.map(j => j.id)))
+      setSelectedIds(new Set(displayJobs.map(j => j.id)))
     } else {
       setSelectedIds(new Set())
     }
@@ -135,6 +141,113 @@ function JobsPageContent() {
     }
   }
 
+  async function scoreSelectedJobs() {
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : (selectedJob ? [selectedJob.id] : [])
+    if (ids.length === 0) {
+      alert('Select at least one job or open a job in the detail panel to score.')
+      return
+    }
+
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.user) {
+      alert('You must be logged in to score jobs.')
+      return
+    }
+
+    setScoring(true)
+    try {
+      for (const jobId of ids) {
+        const response = await fetch('/api/jobs/score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: session.user.id, jobId, modelQuality }),
+        })
+        const result = await response.json()
+        if (!response.ok) {
+          console.error('Scoring error:', result.error)
+          alert(`Failed to score job: ${result.error || 'Unknown error'}`)
+          break
+        }
+      }
+      await loadJobs()
+      if (selectedJob) {
+        const refreshed = await supabase
+          .from('jobs')
+          .select('*')
+          .eq('id', selectedJob.id)
+          .single()
+        if (refreshed.data) setSelectedJob(refreshed.data as Job)
+      }
+      setSelectedIds(new Set())
+      alert(`Scored ${ids.length} job(s).`)
+    } finally {
+      setScoring(false)
+    }
+  }
+
+  const filteredJobs = jobs.filter((job) => {
+    if (minScore > 0 && job.score_you !== null && job.score_you !== undefined) {
+      return job.score_you >= minScore
+    }
+    if (minScore > 0 && (job.score_you === null || job.score_you === undefined)) {
+      return false
+    }
+    return true
+  })
+
+  function compareJobs(a: Job, b: Job) {
+    const getCompany = (job: Job) => ((job as any).companies?.name || '').toLowerCase()
+    const getTitle = (job: Job) => (job.title || '').toLowerCase()
+    const getLocation = (job: Job) => (job.location_raw || '').toLowerCase()
+    const getStatus = (job: Job) => job.status || ''
+    const getScore = (job: Job) => job.score_you ?? -1
+    const getPosted = (job: Job) => job.posted_at ? new Date(job.posted_at).getTime() : 0
+    const getRemote = (job: Job) => (job.remote_flag === true ? 1 : job.remote_flag === false ? 0 : -1)
+
+    let result = 0
+    switch (sortKey) {
+      case 'company':
+        result = getCompany(a).localeCompare(getCompany(b))
+        break
+      case 'title':
+        result = getTitle(a).localeCompare(getTitle(b))
+        break
+      case 'location':
+        result = getLocation(a).localeCompare(getLocation(b))
+        break
+      case 'status':
+        result = getStatus(a).localeCompare(getStatus(b))
+        break
+      case 'score':
+        result = getScore(a) - getScore(b)
+        break
+      case 'remote':
+        result = getRemote(a) - getRemote(b)
+        break
+      case 'posted':
+      default:
+        result = getPosted(a) - getPosted(b)
+        break
+    }
+    return sortDirection === 'asc' ? result : -result
+  }
+
+  const displayJobs = [...filteredJobs].sort(compareJobs)
+
+  function handleSort(key: typeof sortKey) {
+    if (sortKey === key) {
+      setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDirection(key === 'posted' ? 'desc' : 'asc')
+    }
+  }
+
+  function renderSortIndicator(key: typeof sortKey) {
+    if (sortKey !== key) return null
+    return sortDirection === 'asc' ? ' ▲' : ' ▼'
+  }
+
   if (loading) {
     return <div className="p-8">Loading...</div>
   }
@@ -143,7 +256,9 @@ function JobsPageContent() {
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold">Jobs <span className="text-gray-500 text-xl">({jobs.length})</span></h1>
+          <h1 className="text-3xl font-bold">
+            Jobs <span className="text-gray-500 text-xl">({filteredJobs.length}/{jobs.length})</span>
+          </h1>
           <div className="flex gap-3 items-center">
             <input
               type="text"
@@ -166,6 +281,25 @@ function JobsPageContent() {
               <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} />
               Remote only
             </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              Minimum score
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={minScore}
+                onChange={(e) => setMinScore(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                className="w-20 px-2 py-1 border rounded"
+              />
+            </label>
+            <ModelToggle value={modelQuality} onChange={setModelQuality} />
+            <button
+              onClick={scoreSelectedJobs}
+              disabled={scoring}
+              className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+            >
+              {scoring ? 'Scoring...' : 'Score Selected'}
+            </button>
             <button
               onClick={() => window.location.href = '/'}
               className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
@@ -219,21 +353,36 @@ function JobsPageContent() {
                     <th className="px-2 py-3">
                       <input
                         type="checkbox"
-                        checked={selectedIds.size > 0 && selectedIds.size === jobs.length}
+                        checked={selectedIds.size > 0 && selectedIds.size === displayJobs.length}
                         onChange={(e) => toggleSelectAll(e.target.checked)}
                       />
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Company</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Remote</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('company')}>
+                      Company{renderSortIndicator('company')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('title')}>
+                      Title{renderSortIndicator('title')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('location')}>
+                      Location{renderSortIndicator('location')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('remote')}>
+                      Remote{renderSortIndicator('remote')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('status')}>
+                      Status{renderSortIndicator('status')}
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('score')}>
+                      Score{renderSortIndicator('score')}
+                    </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fetch Error</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Posted</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer" onClick={() => handleSort('posted')}>
+                      Posted{renderSortIndicator('posted')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {jobs.map((job) => {
+                  {displayJobs.map((job) => {
                     const company = (job as any).companies
                     const hasError = company?.last_fetch_error
                     const isSelected = selectedIds.has(job.id)
@@ -257,6 +406,13 @@ function JobsPageContent() {
                           {job.remote_flag === true ? '✓' : job.remote_flag === false ? '✗' : '—'}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500">{job.status}</td>
+                        <td className="px-4 py-3 text-sm text-gray-900">
+                          {job.score_you !== null && job.score_you !== undefined ? (
+                            <span className="font-semibold">{job.score_you}%</span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-sm text-gray-500">
                           {hasError ? (
                             <span className="text-red-600" title={hasError}>
@@ -275,9 +431,9 @@ function JobsPageContent() {
                 </tbody>
               </table>
             </div>
-            {jobs.length === 0 && (
+            {filteredJobs.length === 0 && (
               <div className="text-center py-12 text-gray-500">
-                No jobs found. Fetch jobs from the Companies page.
+                No jobs match the current filters. Adjust filters or fetch more jobs from the Companies page.
               </div>
             )}
           </div>
@@ -359,10 +515,79 @@ function JobsPageContent() {
                     </a>
                   </div>
                 )}
-                {selectedJob.description_snippet && (
+                {(selectedJob.full_description || selectedJob.description_snippet) && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                    <p className="text-sm text-gray-600 whitespace-pre-wrap">{selectedJob.description_snippet}</p>
+                    <div className="text-sm text-gray-700 leading-relaxed job-description space-y-2">
+                      {selectedJob.full_description ? (
+                        <div
+                          dangerouslySetInnerHTML={{
+                            __html: selectedJob.full_description,
+                          }}
+                        />
+                      ) : (
+                        <p>{selectedJob.description_snippet}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {selectedJob.score_you !== null && selectedJob.score_you !== undefined && (
+                  <div className="space-y-2">
+                    <div className="text-lg font-semibold">AI Match Score: {selectedJob.score_you}%</div>
+                    {selectedJob.score_reasoning && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Reasoning</label>
+                        <p className="text-sm text-gray-600 whitespace-pre-wrap">{selectedJob.score_reasoning}</p>
+                      </div>
+                    )}
+                    {selectedJob.score_strengths && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Strengths</label>
+                        <ul className="list-disc list-inside text-sm text-gray-600">
+                          {(() => {
+                            try {
+                              return JSON.parse(selectedJob.score_strengths || '[]')
+                            } catch {
+                              return []
+                            }
+                          })().map((item: string, idx: number) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {selectedJob.score_gaps && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Gaps</label>
+                        <ul className="list-disc list-inside text-sm text-gray-600">
+                          {(() => {
+                            try {
+                              return JSON.parse(selectedJob.score_gaps || '[]')
+                            } catch {
+                              return []
+                            }
+                          })().map((item: string, idx: number) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {selectedJob.score_hard_blockers && (
+                      <div>
+                        <label className="block text-sm font-medium text-red-700 mb-1">Hard blockers</label>
+                        <ul className="list-disc list-inside text-sm text-red-700">
+                          {(() => {
+                            try {
+                              return JSON.parse(selectedJob.score_hard_blockers || '[]')
+                            } catch {
+                              return []
+                            }
+                          })().map((item: string, idx: number) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
                 {selectedJob.team && (
