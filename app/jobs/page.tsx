@@ -14,6 +14,7 @@ function JobsPageContent() {
   const [filterClosed, setFilterClosed] = useState<boolean>(false)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
   const [search, setSearch] = useState<string>('')
   const [companyFilter, setCompanyFilter] = useState<string>('all')
   const [remoteOnly, setRemoteOnly] = useState<boolean>(false)
@@ -94,13 +95,32 @@ function JobsPageContent() {
     }
   }
 
-  function toggleSelect(jobId: string, checked: boolean) {
+  function toggleSelect(
+    jobId: string,
+    index: number,
+    checked: boolean,
+    shiftKey?: boolean,
+  ) {
     setSelectedIds(prev => {
       const next = new Set(prev)
-      if (checked) next.add(jobId)
-      else next.delete(jobId)
+
+      if (shiftKey && lastSelectedIndex !== null) {
+        const start = Math.min(lastSelectedIndex, index)
+        const end = Math.max(lastSelectedIndex, index)
+        for (let i = start; i <= end; i++) {
+          const id = displayJobs[i]?.id
+          if (!id) continue
+          if (checked) next.add(id)
+          else next.delete(id)
+        }
+      } else {
+        if (checked) next.add(jobId)
+        else next.delete(jobId)
+      }
+
       return next
     })
+    setLastSelectedIndex(index)
   }
 
   function toggleSelectAll(checked: boolean) {
@@ -382,7 +402,7 @@ function JobsPageContent() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {displayJobs.map((job) => {
+                  {displayJobs.map((job, idx) => {
                     const company = (job as any).companies
                     const hasError = company?.last_fetch_error
                     const isSelected = selectedIds.has(job.id)
@@ -396,7 +416,15 @@ function JobsPageContent() {
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={(e) => toggleSelect(job.id, e.target.checked)}
+                            onChange={(e) =>
+                              toggleSelect(
+                                job.id,
+                                idx,
+                                e.target.checked,
+                                // use nativeEvent to reliably read modifier keys
+                                (e.nativeEvent as MouseEvent).shiftKey,
+                              )
+                            }
                           />
                         </td>
                         <td className="px-4 py-3 text-sm font-medium text-gray-900">{company?.name || '—'}</td>

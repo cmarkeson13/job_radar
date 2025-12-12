@@ -51,6 +51,7 @@ export interface Job {
   score_strengths: string | null
   score_gaps: string | null
   score_hard_blockers: string | null
+  score_diagnostics: Record<string, any> | null
   score_last_updated: string | null
   status: JobStatus
   notes: string | null
