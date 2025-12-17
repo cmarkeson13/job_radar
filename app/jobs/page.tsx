@@ -320,10 +320,13 @@ function JobsPageContent() {
             >
               {scoring ? 'Scoring...' : 'Score Selected'}
             </button>
-            <button
-              onClick={() => window.location.href = '/'}
-              className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+            <Link
+              href="/test-benchmarks"
+              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
             >
+              Test Benchmarks
+            </Link>
+            <button onClick={() => (window.location.href = '/')} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
               Home
             </button>
           </div>
