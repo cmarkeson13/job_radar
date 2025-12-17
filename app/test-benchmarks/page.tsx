@@ -21,6 +21,9 @@ function TestBenchmarksPageContent() {
   const { modelQuality, setModelQuality } = useModelPreference()
   const [sortKey, setSortKey] = useState<'company' | 'title' | 'location' | 'remote' | 'status' | 'score' | 'posted'>('posted')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [analyzerOutput, setAnalyzerOutput] = useState<string>('')
+  const [analyzerLoading, setAnalyzerLoading] = useState<boolean>(false)
+  const [analyzerError, setAnalyzerError] = useState<string>('')
 
   useEffect(() => {
     loadJobs()
@@ -198,6 +201,23 @@ function TestBenchmarksPageContent() {
     return sortDirection === 'asc' ? ' ▲' : ' ▼'
   }
 
+  async function runAnalyzer() {
+    setAnalyzerLoading(true)
+    setAnalyzerError('')
+    try {
+      const resp = await fetch('/api/benchmarks/analyze', { method: 'POST' })
+      const data = await resp.json()
+      if (!resp.ok || !data.success) {
+        throw new Error(data.error || 'Analyzer failed')
+      }
+      setAnalyzerOutput(data.output || '')
+    } catch (err) {
+      setAnalyzerError(err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setAnalyzerLoading(false)
+    }
+  }
+
   if (loading) {
     return <div className="p-8">Loading...</div>
   }
@@ -240,6 +260,13 @@ function TestBenchmarksPageContent() {
             >
               {scoring ? 'Scoring...' : 'Score Selected'}
             </button>
+            <button
+              onClick={runAnalyzer}
+              disabled={analyzerLoading}
+              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:bg-gray-400"
+            >
+              {analyzerLoading ? 'Running…' : 'Run Analyzer'}
+            </button>
             <Link href="/" className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
               Home
             </Link>
@@ -256,6 +283,23 @@ function TestBenchmarksPageContent() {
             />
             <span>Show Closed Jobs</span>
           </label>
+        </div>
+
+        <div className="mb-6 bg-white rounded-lg shadow p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-lg font-semibold text-gray-900">Analyzer Output</div>
+            <button
+              onClick={runAnalyzer}
+              disabled={analyzerLoading}
+              className="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:bg-gray-400 text-sm"
+            >
+              {analyzerLoading ? 'Running…' : 'Run Analyzer'}
+            </button>
+          </div>
+          {analyzerError && <div className="text-sm text-red-600 mb-2">Error: {analyzerError}</div>}
+          <pre className="whitespace-pre-wrap text-sm text-gray-800 bg-gray-50 rounded p-3 overflow-auto max-h-96">
+            {analyzerOutput || 'No analyzer output yet.'}
+          </pre>
         </div>
 
         <div className="grid grid-cols-3 gap-6">
