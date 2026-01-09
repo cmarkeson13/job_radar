@@ -20,6 +20,7 @@ function JobsPageContent() {
   const [remoteOnly, setRemoteOnly] = useState<boolean>(false)
   const [minScore, setMinScore] = useState<number>(0)
   const [scoring, setScoring] = useState<boolean>(false)
+  const [scoringProgress, setScoringProgress] = useState<string | null>(null)
   const { modelQuality, setModelQuality } = useModelPreference()
   const [sortKey, setSortKey] = useState<'company' | 'title' | 'location' | 'remote' | 'status' | 'score' | 'posted'>('posted')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
@@ -161,13 +162,11 @@ function JobsPageContent() {
     }
   }
 
-  async function scoreSelectedJobs() {
-    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : (selectedJob ? [selectedJob.id] : [])
+  async function scoreIds(ids: string[]) {
     if (ids.length === 0) {
-      alert('Select at least one job or open a job in the detail panel to score.')
+      alert('No jobs to score.')
       return
     }
-
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.user) {
       alert('You must be logged in to score jobs.')
@@ -175,40 +174,58 @@ function JobsPageContent() {
     }
 
     setScoring(true)
-    let completed = 0
-    let failed = false
+    setScoringProgress(`0 / ${ids.length}`)
     try {
-      for (const jobId of ids) {
-        const response = await fetch('/api/jobs/score', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: session.user.id, jobId, modelQuality }),
-        })
-        const result = await response.json()
-        if (!response.ok) {
-          console.error('Scoring error:', result.error)
-          alert(`Failed to score job: ${result.error || 'Unknown error'}`)
-          failed = true
-          break
-        }
-        completed += 1
+      const response = await fetch('/api/jobs/score-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: session.user.id, jobIds: ids, modelQuality }),
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        throw new Error(result.error || 'Unknown error')
       }
+      setScoringProgress(`${result.completed ?? ids.length} / ${result.total ?? ids.length}`)
+
       await loadJobs()
       if (selectedJob) {
-        const refreshed = await supabase
-          .from('jobs')
-          .select('*')
-          .eq('id', selectedJob.id)
-          .single()
+        const refreshed = await supabase.from('jobs').select('*').eq('id', selectedJob.id).single()
         if (refreshed.data) setSelectedJob(refreshed.data as Job)
       }
       setSelectedIds(new Set())
-      if (!failed) {
-        alert(`Scored ${completed} job(s).`)
+
+      if (result.failures && result.failures.length > 0) {
+        const failedList = result.failures.slice(0, 5).map((f: any) => f.jobId).join(', ')
+        alert(`Scored ${result.completed} of ${result.total}. Failures: ${result.failures.length}${failedList ? ` (e.g., ${failedList})` : ''}`)
+      } else {
+        alert(`Scored ${result.completed ?? ids.length} job(s).`)
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      console.error('Scoring error:', message)
+      alert(`Failed to score jobs: ${message}`)
     } finally {
       setScoring(false)
+      setScoringProgress(null)
     }
+  }
+
+  async function scoreSelectedJobs() {
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : (selectedJob ? [selectedJob.id] : [])
+    if (ids.length === 0) {
+      alert('Select at least one job or open a job in the detail panel to score.')
+      return
+    }
+    await scoreIds(ids)
+  }
+
+  async function scoreNewJobs() {
+    const ids = displayJobs.filter(job => job.score_you === null || job.score_you === undefined).map(job => job.id)
+    if (ids.length === 0) {
+      alert('No unscored jobs found in the current view.')
+      return
+    }
+    await scoreIds(ids)
   }
 
   const filteredJobs = jobs.filter((job) => {
@@ -325,11 +342,18 @@ function JobsPageContent() {
                 disabled={scoring}
                 className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
               >
-                {scoring ? 'Scoring...' : 'Score Selected'}
+                {scoring ? 'Scoring...' : 'Re-score Selected'}
+              </button>
+              <button
+                onClick={scoreNewJobs}
+                disabled={scoring}
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+              >
+                {scoring ? 'Scoring...' : 'Score New'}
               </button>
               {scoring && (
                 <span className="text-sm text-gray-700">
-                  Scoring in progress...
+                  {scoringProgress ? `Scoring in progress: ${scoringProgress}` : 'Scoring in progress...'}
                 </span>
               )}
             </div>
