@@ -805,16 +805,19 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
   const totalMust = diag.must_have_skills_present.length + diag.must_have_skills_missing.length
   const mustCoverageRatio =
     totalMust === 0 ? 0 : diag.must_have_skills_present.length / Math.max(totalMust, 1)
+  const prefRoleWeak = diag.preference_alignment.role_types === 'weak'
+  const prefKeywordsWeak = diag.preference_alignment.keywords === 'weak'
+  const prefCompanyWeak = diag.preference_alignment.company_size === 'weak'
 
   switch (diag.overall_fit_label) {
     case 'plug_and_play':
       score = Math.max(score, 96)
       break
     case 'strong_fit':
-      score = Math.max(score, 92)
+      score = Math.max(score, 90)
       break
     case 'stretch':
-      score = Math.max(score, 78)
+      score = Math.max(score, 74)
       break
     case 'weak_fit':
       score = Math.max(score, 50)
@@ -838,6 +841,22 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
   // Soft location mismatch should not clamp the score if everything else is strong
   if (diag.blocking_issues?.length && !hasHardLocationRequirement && !hasWorkAuthBlocker && !onlySoftLocationMismatch) {
     score = Math.min(score, 55)
+  }
+
+  // Preference weakness caps
+  if (prefKeywordsWeak && prefRoleWeak && prefCompanyWeak) {
+    score = Math.min(score, 45)
+  } else if (prefKeywordsWeak && prefRoleWeak) {
+    score = Math.min(score, 55)
+  }
+
+  // Role/domain mismatch cap; harder clamp when there's essentially no coverage
+  if (prefRoleWeak && diag.domain_alignment === 'weak') {
+    if (mustCoverageRatio < 0.2) {
+      score = Math.min(score, 20)
+    } else {
+      score = Math.min(score, 45)
+    }
   }
 
   // Extra cap for zero-coverage hard_no to pull bottom band down, but only when also severely under-experienced
@@ -871,7 +890,7 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
   // High coverage rescue: if coverage is strong, avoid over-clamping
   if (mustCoverageRatio >= 0.85 && diag.overall_fit_label !== 'hard_no') {
     score = Math.max(score, 88)
-    score = Math.min(score, 95)
+    score = Math.min(score, 92)
   } else if (mustCoverageRatio >= 0.75 && diag.overall_fit_label !== 'hard_no') {
     score = Math.max(score, 85)
     // For strong_fit, keep a lower cap to avoid 80-band overshoot
@@ -885,10 +904,11 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
       diag.overall_fit_label === 'stretch' &&
       mustCoverageRatio >= 0.8 &&
       diag.must_have_skills_missing.length <= 1 &&
-      diag.tools_missing.length <= 2
+      diag.tools_missing.length <= 2 &&
+      diag.domain_alignment !== 'weak'
     ) {
-      score = Math.max(score, 90)
-      score = Math.min(score, 92)
+      score = Math.max(score, 92)
+      score = Math.min(score, 94)
     }
   } else if (mustCoverageRatio >= 0.6 && (diag.overall_fit_label === 'stretch' || diag.overall_fit_label === 'strong_fit')) {
     score = Math.max(score, 72)
@@ -896,11 +916,17 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
 
   // Moderate floor for partial coverage non-hard-no to lift mids slightly
   if (mustCoverageRatio >= 0.5 && diag.overall_fit_label !== 'hard_no') {
-    score = Math.max(score, 38)
+    score = Math.max(score, 52)
   }
   // Slight floor for lower coverage (not hard_no) to help 30–50 bands while easing the clamp
   if (mustCoverageRatio >= 0.4 && diag.overall_fit_label !== 'hard_no') {
-    score = Math.max(score, 34)
+    score = Math.max(score, 48)
+  }
+  // Lift very low mids slightly when some coverage exists
+  if (diag.overall_fit_label !== 'hard_no') {
+    if (mustCoverageRatio >= 0.2 && mustCoverageRatio < 0.4) {
+      score = Math.max(score, 42)
+    }
   }
 
   // Small bump for weak_fit with some coverage without letting it run away
@@ -939,6 +965,20 @@ function scoreFromDiagnostics(diag: LlmDiagnostics) {
     (diag.overall_fit_label === 'strong_fit' || diag.overall_fit_label === 'stretch')
   ) {
     score = Math.min(score, 95)
+  }
+
+  // Overqualification clamp
+  if (diag.seniority_alignment === 'above_expectation' && diag.experience_years_delta >= 3) {
+    score -= 8
+    score = Math.min(score, 72)
+  }
+
+  // Hard cap for near-zero coverage weak/hard_no to prevent bottom-band overshoot
+  if (
+    mustCoverageRatio < 0.2 &&
+    (diag.overall_fit_label === 'weak_fit' || diag.overall_fit_label === 'hard_no')
+  ) {
+    score = Math.min(score, 25)
   }
 
   score = Math.max(score, 5)

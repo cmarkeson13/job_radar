@@ -175,6 +175,8 @@ function JobsPageContent() {
     }
 
     setScoring(true)
+    let completed = 0
+    let failed = false
     try {
       for (const jobId of ids) {
         const response = await fetch('/api/jobs/score', {
@@ -186,8 +188,10 @@ function JobsPageContent() {
         if (!response.ok) {
           console.error('Scoring error:', result.error)
           alert(`Failed to score job: ${result.error || 'Unknown error'}`)
+          failed = true
           break
         }
+        completed += 1
       }
       await loadJobs()
       if (selectedJob) {
@@ -199,7 +203,9 @@ function JobsPageContent() {
         if (refreshed.data) setSelectedJob(refreshed.data as Job)
       }
       setSelectedIds(new Set())
-      alert(`Scored ${ids.length} job(s).`)
+      if (!failed) {
+        alert(`Scored ${completed} job(s).`)
+      }
     } finally {
       setScoring(false)
     }
@@ -313,13 +319,20 @@ function JobsPageContent() {
               />
             </label>
             <ModelToggle value={modelQuality} onChange={setModelQuality} />
-            <button
-              onClick={scoreSelectedJobs}
-              disabled={scoring}
-              className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
-            >
-              {scoring ? 'Scoring...' : 'Score Selected'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={scoreSelectedJobs}
+                disabled={scoring}
+                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+              >
+                {scoring ? 'Scoring...' : 'Score Selected'}
+              </button>
+              {scoring && (
+                <span className="text-sm text-gray-700">
+                  Scoring in progress...
+                </span>
+              )}
+            </div>
             <Link
               href="/test-benchmarks"
               className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"

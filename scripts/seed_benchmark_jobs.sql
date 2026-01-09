@@ -653,7 +653,7 @@ from (
       "work_authorization_required":["US work authorization"],
       "summary":"Onsite warehouse pick/pack/ship operations"
     }$$
-  )
+  ),
   (
     'bench_100b',
     'Growth PM – Email & Funnel Optimization',
