@@ -15,6 +15,31 @@ interface CompanyRow {
   relevant_for?: string
 }
 
+// Map common CSV header variations into our expected fields
+function normalizeRow(raw: Record<string, any>): CompanyRow {
+  // Helper to fetch first non-empty value from a list of keys
+  const first = (...keys: string[]) => {
+    for (const key of keys) {
+      const val = raw[key]
+      if (val !== undefined && val !== null && String(val).trim() !== '') return val
+    }
+    return undefined
+  }
+
+  return {
+    name: first('name', 'Name', 'company', 'Company'),
+    slug: first('slug', 'Slug'),
+    careers_url: first('careers_url', 'Careers URL', 'Careers', 'Job Site Link', 'Job Site URL', 'Job Site', 'Job URL'),
+    linkedin_jobs_url: first('linkedin_jobs_url', 'LinkedIn URL', 'LinkedIn Jobs URL'),
+    platform: first('platform', 'Platform', 'Job Site Type', 'Source Platform'),
+    work_model: first('work_model', 'Work Model'),
+    hq: first('hq', 'HQ', 'Headquarters'),
+    tags: first('tags', 'Tags'),
+    priority: first('priority', 'Priority'),
+    relevant_for: first('relevant_for', 'Relevant For'),
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
@@ -24,20 +49,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
+    const fileName = file.name?.toLowerCase() || ''
+    if (!fileName.endsWith('.csv')) {
+      return NextResponse.json({ error: 'Please upload a CSV file (.csv)' }, { status: 400 })
+    }
+
     const buffer = await file.arrayBuffer()
     const workbook = XLSX.read(buffer, { type: 'buffer' })
     const sheetName = workbook.SheetNames[0]
     const worksheet = workbook.Sheets[sheetName]
-    const rows: CompanyRow[] = XLSX.utils.sheet_to_json(worksheet)
+    const rawRows: Record<string, any>[] = XLSX.utils.sheet_to_json(worksheet)
+    const rows: CompanyRow[] = rawRows.map(normalizeRow)
 
     const supabase = createServerClient()
     let imported = 0
     let updated = 0
     const errors: string[] = []
 
-    for (const row of rows) {
+    for (let idx = 0; idx < rows.length; idx++) {
+      const row = rows[idx]
       if (!row.name) {
-        errors.push(`Row missing name: ${JSON.stringify(row)}`)
+        errors.push(`Row ${idx + 2} missing name: ${JSON.stringify(rawRows[idx])}`)
         continue
       }
 

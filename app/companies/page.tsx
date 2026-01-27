@@ -515,10 +515,10 @@ function CompaniesPageContent() {
               {exporting ? 'Exporting...' : 'Download CSV'}
             </button>
             <label className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 cursor-pointer">
-              Import Excel
+              Import CSV
               <input
                 type="file"
-                accept=".xlsx,.xls"
+                accept=".csv"
                 onChange={handleFileUpload}
                 className="hidden"
               />

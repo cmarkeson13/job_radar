@@ -24,8 +24,11 @@ function JobsPageContent() {
   const { modelQuality, setModelQuality } = useModelPreference()
   const [sortKey, setSortKey] = useState<'company' | 'title' | 'location' | 'remote' | 'status' | 'score' | 'posted'>('posted')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [currentPage, setCurrentPage] = useState<number>(1)
+  const pageSize = 200
 
   useEffect(() => {
+    setCurrentPage(1)
     loadJobs()
   }, [filterStatus, filterClosed, search, companyFilter, remoteOnly])
 
@@ -124,28 +127,34 @@ function JobsPageContent() {
     setLastSelectedIndex(index)
   }
 
-  function toggleSelectAll(checked: boolean) {
-    if (checked) {
-      setSelectedIds(new Set(displayJobs.map(j => j.id)))
-    } else {
-      setSelectedIds(new Set())
-    }
-  }
-
   async function bulkDelete() {
     if (selectedIds.size === 0) return
     if (!confirm(`Delete ${selectedIds.size} job(s)?`)) return
-    const { error } = await supabase
-      .from('jobs')
-      .delete()
-      .in('id', Array.from(selectedIds))
-    if (error) {
-      alert(`Error deleting: ${error.message}`)
-    } else {
-      setSelectedIds(new Set())
-      if (selectedJob && selectedIds.has(selectedJob.id)) setSelectedJob(null)
-      loadJobs()
+    const ids = Array.from(selectedIds)
+    const chunkSize = 100
+    const errors: string[] = []
+
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize)
+      const { error } = await supabase
+        .from('jobs')
+        .delete()
+        .in('id', chunk)
+      if (error) {
+        errors.push(`Chunk ${i + 1}-${i + chunk.length}: ${error.message}`)
+        // If the error might be due to URL length, stop early to avoid spamming requests
+        break
+      }
     }
+
+    if (errors.length > 0) {
+      alert(`Error deleting: ${errors.join('\n')}`)
+      return
+    }
+
+    setSelectedIds(new Set())
+    if (selectedJob && selectedIds.has(selectedJob.id)) setSelectedJob(null)
+    loadJobs()
   }
 
   async function bulkFavorite() {
@@ -276,6 +285,31 @@ function JobsPageContent() {
   }
 
   const displayJobs = [...filteredJobs].sort(compareJobs)
+  const totalPages = Math.max(1, Math.ceil(displayJobs.length / pageSize))
+  const startIndex = (currentPage - 1) * pageSize
+  const paginatedJobs = displayJobs.slice(startIndex, startIndex + pageSize)
+
+  function toggleSelectAll(checked: boolean) {
+    if (checked) {
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        paginatedJobs.forEach(j => next.add(j.id))
+        return next
+      })
+    } else {
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        paginatedJobs.forEach(j => next.delete(j.id))
+        return next
+      })
+    }
+  }
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages)
+    }
+  }, [totalPages, currentPage])
 
   function handleSort(key: typeof sortKey) {
     if (sortKey === key) {
@@ -298,56 +332,83 @@ function JobsPageContent() {
   return (
     <div className="p-8">
       <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold">
-            Jobs <span className="text-gray-500 text-xl">({filteredJobs.length}/{jobs.length})</span>
-          </h1>
-          <div className="flex gap-3 items-center">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search title, company, description"
-              className="px-3 py-2 border border-gray-300 rounded w-64"
-            />
-            <select
-              value={companyFilter}
-              onChange={(e) => setCompanyFilter(e.target.value)}
-              className="px-2 py-2 border border-gray-300 rounded"
-            >
-              <option value="all">All companies</option>
-              {Array.from(new Set(jobs.map((j: any) => j.companies?.name).filter(Boolean))).sort().map((name) => (
-                <option key={name as string} value={name as string}>{name as string}</option>
-              ))}
-            </select>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} />
-              Remote only
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              Minimum score
+        <div className="flex flex-col gap-3 mb-4">
+          <div className="flex flex-wrap justify-between items-center gap-3">
+            <h1 className="text-3xl font-bold">
+              Jobs <span className="text-gray-500 text-xl">({filteredJobs.length}/{jobs.length})</span>
+            </h1>
+            <div className="flex flex-wrap gap-3 items-center">
               <input
-                type="number"
-                min={0}
-                max={100}
-                value={minScore}
-                onChange={(e) => setMinScore(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-                className="w-20 px-2 py-1 border rounded"
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search title, company, description"
+                className="px-3 py-2 border border-gray-300 rounded w-64"
               />
+              <select
+                value={companyFilter}
+                onChange={(e) => setCompanyFilter(e.target.value)}
+                className="px-2 py-2 border border-gray-300 rounded"
+              >
+                <option value="all">All companies</option>
+                {Array.from(new Set(jobs.map((j: any) => j.companies?.name).filter(Boolean))).sort().map((name) => (
+                  <option key={name as string} value={name as string}>{name as string}</option>
+                ))}
+              </select>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} />
+                Remote only
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                Minimum score
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={minScore}
+                  onChange={(e) => setMinScore(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                  className="w-20 px-2 py-1 border rounded"
+                />
+              </label>
+              <ModelToggle value={modelQuality} onChange={setModelQuality} />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded"
+            >
+              <option value="all">All Statuses</option>
+              <option value="New">New</option>
+              <option value="Applied">Applied</option>
+              <option value="Interviewing">Interviewing</option>
+              <option value="OnHold">On Hold</option>
+              <option value="Rejected">Rejected</option>
+            </select>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={filterClosed}
+                onChange={(e) => setFilterClosed(e.target.checked)}
+                className="rounded"
+              />
+              <span>Show Closed Jobs</span>
             </label>
-            <ModelToggle value={modelQuality} onChange={setModelQuality} />
+
             <div className="flex items-center gap-2">
               <button
                 onClick={scoreSelectedJobs}
                 disabled={scoring}
-                className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+                className="px-3 py-2 bg-purple-700 text-white rounded-md hover:bg-purple-800 disabled:bg-gray-400 text-sm"
               >
                 {scoring ? 'Scoring...' : 'Re-score Selected'}
               </button>
               <button
                 onClick={scoreNewJobs}
                 disabled={scoring}
-                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+                className="px-3 py-2 bg-indigo-700 text-white rounded-md hover:bg-indigo-800 disabled:bg-gray-400 text-sm"
               >
                 {scoring ? 'Scoring...' : 'Score New'}
               </button>
@@ -357,40 +418,11 @@ function JobsPageContent() {
                 </span>
               )}
             </div>
-            <Link
-              href="/test-benchmarks"
-              className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-            >
-              Test Benchmarks
-            </Link>
-            <button onClick={() => (window.location.href = '/')} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
-              Home
-            </button>
+            <div className="text-sm text-gray-600 ml-auto">
+              {selectedIds.size > 0 ? `${selectedIds.size} selected · ` : ''}
+              Showing {paginatedJobs.length ? `${startIndex + 1}-${startIndex + paginatedJobs.length}` : '0'} of {displayJobs.length}
+            </div>
           </div>
-        </div>
-
-        <div className="mb-4 flex gap-4">
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded"
-          >
-            <option value="all">All Statuses</option>
-            <option value="New">New</option>
-            <option value="Applied">Applied</option>
-            <option value="Interviewing">Interviewing</option>
-            <option value="OnHold">On Hold</option>
-            <option value="Rejected">Rejected</option>
-          </select>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={filterClosed}
-              onChange={(e) => setFilterClosed(e.target.checked)}
-              className="rounded"
-            />
-            <span>Show Closed Jobs</span>
-          </label>
         </div>
 
         <div className="grid grid-cols-3 gap-6">
@@ -413,7 +445,10 @@ function JobsPageContent() {
                     <th className="px-2 py-3">
                       <input
                         type="checkbox"
-                        checked={selectedIds.size > 0 && selectedIds.size === displayJobs.length}
+                        checked={
+                          paginatedJobs.length > 0 &&
+                          paginatedJobs.every(j => selectedIds.has(j.id))
+                        }
                         onChange={(e) => toggleSelectAll(e.target.checked)}
                       />
                     </th>
@@ -442,7 +477,7 @@ function JobsPageContent() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {displayJobs.map((job, idx) => {
+                  {paginatedJobs.map((job, idx) => {
                     const company = (job as any).companies
                     const hasError = company?.last_fetch_error
                     const isSelected = selectedIds.has(job.id)
@@ -459,7 +494,7 @@ function JobsPageContent() {
                             onChange={(e) =>
                               toggleSelect(
                                 job.id,
-                                idx,
+                                startIndex + idx,
                                 e.target.checked,
                                 // use nativeEvent to reliably read modifier keys
                                 (e.nativeEvent as MouseEvent).shiftKey,
@@ -498,6 +533,43 @@ function JobsPageContent() {
                   })}
                 </tbody>
               </table>
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-4 py-3 text-sm text-gray-700 border-t">
+                  <span>
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setCurrentPage(1)}
+                      disabled={currentPage === 1}
+                      className="px-2 py-1 border rounded disabled:text-gray-400"
+                    >
+                      « First
+                    </button>
+                    <button
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className="px-2 py-1 border rounded disabled:text-gray-400"
+                    >
+                      ‹ Prev
+                    </button>
+                    <button
+                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                      disabled={currentPage === totalPages}
+                      className="px-2 py-1 border rounded disabled:text-gray-400"
+                    >
+                      Next ›
+                    </button>
+                    <button
+                      onClick={() => setCurrentPage(totalPages)}
+                      disabled={currentPage === totalPages}
+                      className="px-2 py-1 border rounded disabled:text-gray-400"
+                    >
+                      Last »
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             {filteredJobs.length === 0 && (
               <div className="text-center py-12 text-gray-500">
