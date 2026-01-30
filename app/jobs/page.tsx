@@ -1,14 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Job } from '@/lib/database.types'
-import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
 import { ModelToggle, useModelPreference } from '@/components/ModelToggle'
 
 function JobsPageContent() {
   const [jobs, setJobs] = useState<Job[]>([])
+  const [totalCount, setTotalCount] = useState<number>(0)
+  const [allJobsCount, setAllJobsCount] = useState<number>(0)
+  const [companyOptions, setCompanyOptions] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [filterClosed, setFilterClosed] = useState<boolean>(false)
@@ -27,24 +29,55 @@ function JobsPageContent() {
   const [currentPage, setCurrentPage] = useState<number>(1)
   const pageSize = 200
 
+  const filtersKey = JSON.stringify({
+    filterStatus,
+    filterClosed,
+    search: search.trim(),
+    companyFilter,
+    remoteOnly,
+    minScore,
+  })
+  const previousFiltersKey = useRef(filtersKey)
+
   useEffect(() => {
-    setCurrentPage(1)
+    const filtersChanged = previousFiltersKey.current !== filtersKey
+    if (filtersChanged && currentPage !== 1) {
+      previousFiltersKey.current = filtersKey
+      setCurrentPage(1)
+      return
+    }
+    previousFiltersKey.current = filtersKey
     loadJobs()
-  }, [filterStatus, filterClosed, search, companyFilter, remoteOnly])
+  }, [filtersKey, sortKey, sortDirection, currentPage])
+
+  useEffect(() => {
+    loadSummaryAndCompanies()
+  }, [])
+
+  useEffect(() => {
+    setLastSelectedIndex(null)
+  }, [currentPage])
 
   async function loadJobs() {
     setLoading(true)
+    const offset = (currentPage - 1) * pageSize
+    const searchTerm = search.trim()
+    const likeTerm = searchTerm ? `%${searchTerm.replace(/[%_]/g, '\\$&')}%` : null
+    const ascending = sortDirection === 'asc'
+
     let query = supabase
       .from('jobs')
-      .select(`
+      .select(
+        `
         *,
         companies (
           name,
           slug,
           last_fetch_error
         )
-      `)
-      .order('detected_at', { ascending: false })
+      `,
+        { count: 'exact' }
+      )
 
     if (filterStatus !== 'all') {
       query = query.eq('status', filterStatus)
@@ -59,28 +92,96 @@ function JobsPageContent() {
     }
 
     if (companyFilter !== 'all') {
-      // Filter by company name through the join alias 'companies.name'
       query = query.eq('companies.name', companyFilter)
     }
 
-    const { data, error } = await query
+    if (minScore > 0) {
+      query = query.not('score_you', 'is', null).gte('score_you', minScore)
+    }
+
+    if (likeTerm) {
+      query = query.or(
+        `title.ilike.${likeTerm},description_snippet.ilike.${likeTerm},companies.name.ilike.${likeTerm}`
+      )
+    }
+
+    // Primary + secondary sort in a single ordering pass to avoid overrides
+    const applyOrdering = () => {
+      switch (sortKey) {
+        case 'company':
+          query = query
+            .order('name', { foreignTable: 'companies', ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'title':
+          query = query
+            .order('title', { ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'location':
+          query = query
+            .order('location_raw', { ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'status':
+          query = query
+            .order('status', { ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'score':
+          query = query
+            .order('score_you', {
+              ascending,
+              nullsLast: !ascending,
+              nullsFirst: ascending,
+            })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'remote':
+          query = query
+            .order('remote_flag', { ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+        case 'posted':
+        default:
+          query = query
+            .order('posted_at', { ascending, nullsLast: true })
+            .order('detected_at', { ascending: false, nullsLast: true })
+          break
+      }
+    }
+
+    applyOrdering()
+
+    const { data, error, count } = await query.range(offset, offset + pageSize - 1)
 
     if (error) {
       console.error('Error loading jobs:', error)
       alert(`Error loading jobs: ${error.message}`)
     } else {
-      let rows = data || []
-      if (search.trim()) {
-        const s = search.trim().toLowerCase()
-        rows = rows.filter((r: any) =>
-          (r.title || '').toLowerCase().includes(s) ||
-          (r.description_snippet || '').toLowerCase().includes(s) ||
-          ((r as any).companies?.name || '').toLowerCase().includes(s)
-        )
-      }
-      setJobs(rows)
+      setJobs(data || [])
+      setTotalCount(count ?? 0)
     }
     setLoading(false)
+  }
+
+  async function loadSummaryAndCompanies() {
+    const [totalResult, companyResult] = await Promise.all([
+      supabase.from('jobs').select('id', { count: 'exact', head: true }),
+      supabase.from('companies').select('name').order('name'),
+    ])
+
+    if (!totalResult.error && typeof totalResult.count === 'number') {
+      setAllJobsCount(totalResult.count)
+    }
+
+    if (!companyResult.error && Array.isArray(companyResult.data)) {
+      setCompanyOptions(
+        companyResult.data
+          .map((row: any) => row.name)
+          .filter(Boolean)
+      )
+    }
   }
 
   async function updateJobStatus(jobId: string, status: Job['status']) {
@@ -112,7 +213,7 @@ function JobsPageContent() {
         const start = Math.min(lastSelectedIndex, index)
         const end = Math.max(lastSelectedIndex, index)
         for (let i = start; i <= end; i++) {
-          const id = displayJobs[i]?.id
+          const id = jobs[i]?.id
           if (!id) continue
           if (checked) next.add(id)
           else next.delete(id)
@@ -229,7 +330,7 @@ function JobsPageContent() {
   }
 
   async function scoreNewJobs() {
-    const ids = displayJobs.filter(job => job.score_you === null || job.score_you === undefined).map(job => job.id)
+    const ids = jobs.filter(job => job.score_you === null || job.score_you === undefined).map(job => job.id)
     if (ids.length === 0) {
       alert('No unscored jobs found in the current view.')
       return
@@ -237,69 +338,20 @@ function JobsPageContent() {
     await scoreIds(ids)
   }
 
-  const filteredJobs = jobs.filter((job) => {
-    if (minScore > 0 && job.score_you !== null && job.score_you !== undefined) {
-      return job.score_you >= minScore
-    }
-    if (minScore > 0 && (job.score_you === null || job.score_you === undefined)) {
-      return false
-    }
-    return true
-  })
-
-  function compareJobs(a: Job, b: Job) {
-    const getCompany = (job: Job) => ((job as any).companies?.name || '').toLowerCase()
-    const getTitle = (job: Job) => (job.title || '').toLowerCase()
-    const getLocation = (job: Job) => (job.location_raw || '').toLowerCase()
-    const getStatus = (job: Job) => job.status || ''
-    const getScore = (job: Job) => job.score_you ?? -1
-    const getPosted = (job: Job) => job.posted_at ? new Date(job.posted_at).getTime() : 0
-    const getRemote = (job: Job) => (job.remote_flag === true ? 1 : job.remote_flag === false ? 0 : -1)
-
-    let result = 0
-    switch (sortKey) {
-      case 'company':
-        result = getCompany(a).localeCompare(getCompany(b))
-        break
-      case 'title':
-        result = getTitle(a).localeCompare(getTitle(b))
-        break
-      case 'location':
-        result = getLocation(a).localeCompare(getLocation(b))
-        break
-      case 'status':
-        result = getStatus(a).localeCompare(getStatus(b))
-        break
-      case 'score':
-        result = getScore(a) - getScore(b)
-        break
-      case 'remote':
-        result = getRemote(a) - getRemote(b)
-        break
-      case 'posted':
-      default:
-        result = getPosted(a) - getPosted(b)
-        break
-    }
-    return sortDirection === 'asc' ? result : -result
-  }
-
-  const displayJobs = [...filteredJobs].sort(compareJobs)
-  const totalPages = Math.max(1, Math.ceil(displayJobs.length / pageSize))
+  const totalPages = Math.max(1, Math.ceil(Math.max(totalCount, 0) / pageSize))
   const startIndex = (currentPage - 1) * pageSize
-  const paginatedJobs = displayJobs.slice(startIndex, startIndex + pageSize)
 
   function toggleSelectAll(checked: boolean) {
     if (checked) {
       setSelectedIds(prev => {
         const next = new Set(prev)
-        paginatedJobs.forEach(j => next.add(j.id))
+        jobs.forEach(j => next.add(j.id))
         return next
       })
     } else {
       setSelectedIds(prev => {
         const next = new Set(prev)
-        paginatedJobs.forEach(j => next.delete(j.id))
+        jobs.forEach(j => next.delete(j.id))
         return next
       })
     }
@@ -316,7 +368,11 @@ function JobsPageContent() {
       setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortKey(key)
-      setSortDirection(key === 'posted' ? 'desc' : 'asc')
+      const defaultDir =
+        key === 'score' || key === 'posted'
+          ? 'desc'
+          : 'asc'
+      setSortDirection(defaultDir)
     }
   }
 
@@ -335,7 +391,10 @@ function JobsPageContent() {
         <div className="flex flex-col gap-3 mb-4">
           <div className="flex flex-wrap justify-between items-center gap-3">
             <h1 className="text-3xl font-bold">
-              Jobs <span className="text-gray-500 text-xl">({filteredJobs.length}/{jobs.length})</span>
+              Jobs{' '}
+              <span className="text-gray-500 text-xl">
+                ({totalCount}{allJobsCount ? ` / ${allJobsCount}` : ''})
+              </span>
             </h1>
             <div className="flex flex-wrap gap-3 items-center">
               <input
@@ -351,8 +410,11 @@ function JobsPageContent() {
                 className="px-2 py-2 border border-gray-300 rounded"
               >
                 <option value="all">All companies</option>
-                {Array.from(new Set(jobs.map((j: any) => j.companies?.name).filter(Boolean))).sort().map((name) => (
-                  <option key={name as string} value={name as string}>{name as string}</option>
+                {companyFilter !== 'all' && companyOptions.length > 0 && !companyOptions.includes(companyFilter) && (
+                  <option value={companyFilter}>{companyFilter}</option>
+                )}
+                {companyOptions.map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
               <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -420,7 +482,7 @@ function JobsPageContent() {
             </div>
             <div className="text-sm text-gray-600 ml-auto">
               {selectedIds.size > 0 ? `${selectedIds.size} selected · ` : ''}
-              Showing {paginatedJobs.length ? `${startIndex + 1}-${startIndex + paginatedJobs.length}` : '0'} of {displayJobs.length}
+              Showing {jobs.length ? `${startIndex + 1}-${startIndex + jobs.length}` : '0'} of {totalCount}
             </div>
           </div>
         </div>
@@ -446,8 +508,8 @@ function JobsPageContent() {
                       <input
                         type="checkbox"
                         checked={
-                          paginatedJobs.length > 0 &&
-                          paginatedJobs.every(j => selectedIds.has(j.id))
+                          jobs.length > 0 &&
+                          jobs.every(j => selectedIds.has(j.id))
                         }
                         onChange={(e) => toggleSelectAll(e.target.checked)}
                       />
@@ -477,7 +539,7 @@ function JobsPageContent() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {paginatedJobs.map((job, idx) => {
+                  {jobs.map((job, idx) => {
                     const company = (job as any).companies
                     const hasError = company?.last_fetch_error
                     const isSelected = selectedIds.has(job.id)
@@ -494,7 +556,7 @@ function JobsPageContent() {
                             onChange={(e) =>
                               toggleSelect(
                                 job.id,
-                                startIndex + idx,
+                                idx,
                                 e.target.checked,
                                 // use nativeEvent to reliably read modifier keys
                                 (e.nativeEvent as MouseEvent).shiftKey,
@@ -571,7 +633,7 @@ function JobsPageContent() {
                 </div>
               )}
             </div>
-            {filteredJobs.length === 0 && (
+            {totalCount === 0 && (
               <div className="text-center py-12 text-gray-500">
                 No jobs match the current filters. Adjust filters or fetch more jobs from the Companies page.
               </div>
